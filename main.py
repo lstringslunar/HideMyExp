@@ -2,7 +2,6 @@ import configparser
 import os
 import subprocess
 import sys
-import winreg
 
 from helper import get_executable_path, get_window_info, is_topmost_window, get_resource_path, get_exe_path, \
     disable_high_dpi, set_dpi_awareness
@@ -22,7 +21,7 @@ ICON_PATH = get_resource_path('icon.ico')
 IMAGE_PATH = get_executable_path('image.png')
 SETTINGS_PATH = get_executable_path('settings.ini')
 TASK_NAME = "HideMyExpAutoStart"
-ARROW_PATH = get_resource_path('resources/arrow.png')
+ARROW_PATH = get_resource_path('resources/arrow3.png')
 
 
 class Overlay(QWidget):
@@ -30,6 +29,9 @@ class Overlay(QWidget):
         super().__init__()
         self.target_name = target_name
         self.target_hwnd = None
+
+        self.is_fullscreen_borderless = False
+        self.saved_window_info = None
 
         if not os.path.exists(IMAGE_PATH):
             print(f"Error: '{IMAGE_PATH}' not found!")
@@ -51,7 +53,6 @@ class Overlay(QWidget):
         self.calibration_enabled = False
         self.calibration_valid = False
         self.calibration_state_ok = True
-        # self.base_gray = None
         self.base_blue = None
 
         self.current_pixmap = None
@@ -81,10 +82,7 @@ class Overlay(QWidget):
         self.timer.start(1)
 
     def init_ui(self):
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.Tool
-        )
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self.label = QLabel(self)
@@ -110,6 +108,17 @@ class Overlay(QWidget):
         self.lock_action.setFont(font)
         self.lock_action.triggered.connect(self.toggle_lock)
         tray_menu.addAction(self.lock_action)
+
+        # Borderless Fullscreen Action
+        self.fullscreen_action = QAction('全螢幕無邊框', self)
+        self.fullscreen_action.setCheckable(True)
+        self.fullscreen_action.setChecked(False)
+        font_fs = self.fullscreen_action.font()
+        font_fs.setPointSize(12)
+        font_fs.setBold(True)
+        self.fullscreen_action.setFont(font_fs)
+        self.fullscreen_action.triggered.connect(self.toggle_borderless_fullscreen)
+        tray_menu.addAction(self.fullscreen_action)
 
         # Auto Start Action
         self.autostart_action = QAction('開機自啟', self)
@@ -144,6 +153,70 @@ class Overlay(QWidget):
 
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.show()
+
+    def toggle_borderless_fullscreen(self, checked):
+        hwnd, _, _, _, _ = get_window_info(self.target_name)
+        if not hwnd:
+            self.fullscreen_action.setChecked(self.is_fullscreen_borderless)
+            return
+
+        self.is_fullscreen_borderless = checked
+
+        if checked:
+            style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+            ex_style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            rect = win32gui.GetWindowRect(hwnd)
+            self.saved_window_info = {
+                'style': style,
+                'ex_style': ex_style,
+                'rect': rect
+            }
+
+            new_style = style & ~win32con.WS_OVERLAPPEDWINDOW & ~win32con.WS_POPUP
+            new_style |= win32con.WS_POPUP
+            win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, new_style)
+
+            from win32api import MonitorFromWindow, GetMonitorInfo
+            monitor = MonitorFromWindow(hwnd, win32con.MONITOR_DEFAULTTONEAREST)
+            monitor_info = GetMonitorInfo(monitor)
+            monitor_rect = monitor_info['Monitor']
+
+            x, y, w, h = (monitor_rect[0],
+                          monitor_rect[1],
+                          monitor_rect[2] - monitor_rect[0],
+                          monitor_rect[3] - monitor_rect[1])
+
+            win32gui.SetWindowPos(
+                hwnd,
+                win32con.HWND_NOTOPMOST,
+                x, y, w, h,
+                win32con.SWP_FRAMECHANGED | win32con.SWP_SHOWWINDOW
+            )
+        else:
+            if self.saved_window_info:
+                win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, self.saved_window_info['style'])
+                win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, self.saved_window_info['ex_style'])
+
+                l, t, r, b = self.saved_window_info['rect']
+                w = r - l
+                h = b - t
+
+                win32gui.SetWindowPos(
+                    hwnd,
+                    win32con.HWND_NOTOPMOST,
+                    l, t, w, h,
+                    win32con.SWP_FRAMECHANGED | win32con.SWP_SHOWWINDOW
+                )
+                self.saved_window_info = None
+            else:
+                style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+                win32gui.SetWindowLong(hwnd, win32con.GWL_STYLE, style | win32con.WS_OVERLAPPEDWINDOW)
+                win32gui.SetWindowPos(
+                    hwnd,
+                    win32con.HWND_NOTOPMOST,
+                    100, 100, 800, 600,
+                    win32con.SWP_FRAMECHANGED | win32con.SWP_SHOWWINDOW
+                )
 
     @staticmethod
     def check_autostart():
